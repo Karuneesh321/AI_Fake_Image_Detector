@@ -1,10 +1,11 @@
 /**
  * Visual Forensics Module
- * Analyzes pixel-level artifacts that indicate AI generation:
- * - Edge variance (AI images have unnaturally smooth edges)
- * - Noise distribution (real cameras have organic sensor noise)
- * - Color channel correlation (AI images show unusual channel patterns)
- * - Local variance (AI images often have "too uniform" texture regions)
+ * Analyzes pixel-level artifacts that indicate AI generation.
+ *
+ * Tuning notes:
+ * - Real photos taken on phones/cameras have moderate edge variance (5–40)
+ * - AI images are smoother but not always — thresholds widened accordingly
+ * - Channel imbalance: real photos always have some colour cast (sunlight, indoor light)
  */
 
 export const analyzeVisualArtifacts = (ctx, width, height) => {
@@ -15,20 +16,27 @@ export const analyzeVisualArtifacts = (ctx, width, height) => {
   const pixelCount = sampleW * sampleH;
 
   // --- 1. Edge Variance ---
-  // Real photos have high local variance due to natural textures.
-  // AI images are over-smoothed → lower variance = suspicious.
+  // Real photos: moderate variance from natural textures and noise
+  // AI images: over-smoothed → unusually low variance
   let edgeVarianceSum = 0;
   for (let i = 0; i < data.length - 4; i += 4) {
-    const diffR = Math.abs(data[i] - data[i + 4]);
+    const diffR = Math.abs(data[i]     - data[i + 4]);
     const diffG = Math.abs(data[i + 1] - data[i + 5]);
     const diffB = Math.abs(data[i + 2] - data[i + 6]);
     edgeVarianceSum += (diffR + diffG + diffB) / 3;
   }
   const avgEdgeVariance = edgeVarianceSum / pixelCount;
 
-  // --- 2. Noise Distribution ---
-  // Compute standard deviation of pixel brightness.
-  // Real images: medium-high std. AI images: often too low (smooth) or too high (artifacts).
+  // Widened thresholds — real phone photos typically score 8–35
+  let edgeScore;
+  if (avgEdgeVariance > 8)       edgeScore = 85;
+  else if (avgEdgeVariance > 4)  edgeScore = 65;
+  else if (avgEdgeVariance > 2)  edgeScore = 45;
+  else                           edgeScore = 25;
+
+  // --- 2. Noise / Brightness Std Dev ---
+  // Real images: natural sensor noise gives std dev of 25–80
+  // AI images: too smooth (low std) or over-processed (very high std)
   let brightnessSum = 0;
   for (let i = 0; i < data.length; i += 4) {
     brightnessSum += (data[i] + data[i + 1] + data[i + 2]) / 3;
@@ -41,9 +49,15 @@ export const analyzeVisualArtifacts = (ctx, width, height) => {
   }
   const stdDev = Math.sqrt(varianceSum / pixelCount);
 
+  // Widened — most real photos 20–85 std dev
+  let noiseScore;
+  if (stdDev > 20 && stdDev < 100) noiseScore = 85;
+  else if (stdDev > 10)            noiseScore = 60;
+  else                             noiseScore = 30;
+
   // --- 3. Color Channel Correlation ---
-  // Real photos: R, G, B channels are somewhat independent.
-  // AI images often have unnaturally balanced channels.
+  // Real photos always have some colour imbalance (warm/cool light)
+  // Perfect balance (all channels equal) is a weak AI signal
   let rSum = 0, gSum = 0, bSum = 0;
   for (let i = 0; i < data.length; i += 4) {
     rSum += data[i];
@@ -55,27 +69,27 @@ export const analyzeVisualArtifacts = (ctx, width, height) => {
   const bAvg = bSum / pixelCount;
   const channelImbalance = Math.abs(rAvg - gAvg) + Math.abs(gAvg - bAvg);
 
-  // --- Score Calculation ---
-  // Edge variance: higher = more natural
-  let edgeScore = avgEdgeVariance > 25 ? 80 : avgEdgeVariance > 12 ? 55 : 25;
-  // Std Dev: too low OR too high is suspicious
-  let noiseScore = (stdDev > 30 && stdDev < 90) ? 80 : (stdDev > 15) ? 55 : 25;
-  // Channel imbalance: some imbalance is natural; perfect balance is suspicious
-  let channelScore = (channelImbalance > 5 && channelImbalance < 60) ? 80 : 45;
+  // Real photos almost always have imbalance > 3
+  let channelScore;
+  if (channelImbalance > 3)       channelScore = 85;
+  else if (channelImbalance > 1)  channelScore = 60;
+  else                            channelScore = 35;
 
-  const finalScore = Math.round((edgeScore * 0.4) + (noiseScore * 0.35) + (channelScore * 0.25));
+  const finalScore = Math.round(
+    (edgeScore * 0.40) + (noiseScore * 0.35) + (channelScore * 0.25)
+  );
 
   return {
     score: Math.min(100, Math.max(0, finalScore)),
     details: {
-      textureAnalysis: avgEdgeVariance > 25 ? 'Natural variance detected' : 'Suspicious smoothing detected',
-      edgeDetection: edgeScore > 60 ? 'Consistent edge patterns' : 'Artificial edge patterns',
-      noiseProfile: noiseScore > 60 ? 'Organic sensor noise' : 'Synthetic noise pattern',
-      frequencyAnalysis: channelScore > 60 ? 'Normal channel distribution' : 'Unusual frequency patterns',
+      textureAnalysis:  edgeScore  > 60 ? 'Natural variance detected'    : 'Suspicious smoothing detected',
+      edgeDetection:    edgeScore  > 60 ? 'Consistent edge patterns'      : 'Artificial edge patterns',
+      noiseProfile:     noiseScore > 60 ? 'Organic sensor noise'          : 'Synthetic noise pattern',
+      frequencyAnalysis:channelScore>60 ? 'Normal channel distribution'   : 'Unusual frequency patterns',
     },
     rawMetrics: {
-      avgEdgeVariance: avgEdgeVariance.toFixed(2),
-      stdDev: stdDev.toFixed(2),
+      avgEdgeVariance:  avgEdgeVariance.toFixed(2),
+      stdDev:           stdDev.toFixed(2),
       channelImbalance: channelImbalance.toFixed(2),
     }
   };

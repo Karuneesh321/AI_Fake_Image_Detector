@@ -1,85 +1,85 @@
 /**
  * Metadata Analysis Module
- * Uses the `exifr` library to extract and validate real EXIF data from the image file.
+ * Uses the `exifr` library to extract and validate real EXIF data.
  *
- * Real photos contain:
- *  - Camera make/model
- *  - GPS coordinates (optionally)
- *  - DateTimeOriginal (when the photo was actually taken)
- *  - Lens information
- *  - ISO, aperture, shutter speed
- *
- * AI-generated images:
- *  - Typically have NO EXIF data at all
- *  - Or only have basic software metadata (e.g. "GIMP", "Stable Diffusion")
- *  - No camera hardware info
+ * Tuning notes:
+ * - Many real photos shared online have STRIPPED EXIF (WhatsApp, Twitter, etc.)
+ * - Missing EXIF alone should NOT make an image fail — it's a weak signal
+ * - AI software keywords are the strongest negative signal
+ * - Start score at 55 (neutral) instead of 20 (penalising)
  */
 
 export const analyzeMetadata = async (file) => {
-  // Dynamically import exifr only when needed (code splitting)
   let exif = null;
   try {
     const exifr = await import('exifr');
     exif = await exifr.parse(file, {
-      tiff: true,
-      exif: true,
-      gps: true,
-      ifd0: true,
-      pick: ['Make', 'Model', 'DateTimeOriginal', 'LensModel', 'Software',
-             'ExposureTime', 'ISO', 'FNumber', 'GPSLatitude', 'GPSLongitude']
+      tiff: true, exif: true, gps: true, ifd0: true,
+      pick: ['Make', 'Model', 'DateTimeOriginal', 'LensModel',
+             'Software', 'ExposureTime', 'ISO', 'FNumber',
+             'GPSLatitude', 'GPSLongitude']
     });
   } catch {
-    // exifr not installed or parse failed — treat as no metadata
     exif = null;
   }
 
+  // No EXIF at all — neutral score (many real photos lose EXIF on upload)
   if (!exif) {
     return {
-      score: 20,
+      score: 55,
       details: {
-        exifData: 'Missing — no metadata found',
-        cameraModel: 'No camera signature found',
-        editingSoftware: 'Unknown — suspicious absence of data',
-        timestamp: 'No timestamp present',
+        exifData:        'Not present — may have been stripped on upload',
+        cameraModel:     'No camera signature (common for shared images)',
+        editingSoftware: 'No AI editing detected',
+        timestamp:       'No timestamp present',
       },
-      rawMetrics: { hasExif: false, hasCamera: false, hasSoftware: false, hasTimestamp: false }
+      rawMetrics: {
+        hasExif: false, hasCamera: false,
+        hasSoftware: false, hasTimestamp: false,
+        hasAISoftware: false,
+      }
     };
   }
 
-  const hasCamera   = !!(exif.Make || exif.Model);
-  const hasSoftware = !!(exif.Software);
-  const hasTimestamp= !!(exif.DateTimeOriginal);
-  const hasGPS      = !!(exif.GPSLatitude);
-  const hasExposure = !!(exif.ExposureTime || exif.ISO || exif.FNumber);
+  const hasCamera    = !!(exif.Make || exif.Model);
+  const hasSoftware  = !!(exif.Software);
+  const hasTimestamp = !!(exif.DateTimeOriginal);
+  const hasGPS       = !!(exif.GPSLatitude);
+  const hasExposure  = !!(exif.ExposureTime || exif.ISO || exif.FNumber);
 
-  // AI editing software red flags
-  const aiSoftwareKeywords = ['stable diffusion', 'midjourney', 'dall-e', 'adobe firefly',
-                               'runway', 'neural', 'ai', 'generated'];
-  const softwareName = (exif.Software || '').toLowerCase();
-  const hasAISoftware = aiSoftwareKeywords.some(kw => softwareName.includes(kw));
+  const aiKeywords = [
+    'stable diffusion', 'midjourney', 'dall-e', 'dall·e',
+    'adobe firefly', 'runway', 'bing image', 'generated',
+    'neural', 'diffusion'
+  ];
+  const softwareName    = (exif.Software || '').toLowerCase();
+  const hasAISoftware   = aiKeywords.some(kw => softwareName.includes(kw));
 
-  // Score: start at 30, add points for real camera signals
-  let score = 30;
-  if (hasCamera)    score += 25;
-  if (hasTimestamp) score += 20;
-  if (hasExposure)  score += 15;
-  if (hasGPS)       score += 10;
-  if (hasAISoftware) score -= 40; // strong penalty for AI software
+  // Start neutral at 55, add bonuses for real camera signals
+  let score = 55;
+  if (hasCamera)      score += 20;  // strongest positive signal
+  if (hasTimestamp)   score += 10;
+  if (hasExposure)    score += 10;
+  if (hasGPS)         score +=  5;
+  if (hasAISoftware)  score -= 50;  // strong penalty — near-certain AI
 
   score = Math.min(100, Math.max(0, score));
 
   return {
     score,
     details: {
-      exifData: hasCamera ? 'Present and consistent' : 'Missing or suspicious',
-      cameraModel: exif.Model ? `${exif.Make || ''} ${exif.Model}`.trim() : 'No camera signature found',
+      exifData:        hasCamera   ? 'Present and consistent'                     : 'Present but no camera info',
+      cameraModel:     exif.Model  ? `${exif.Make || ''} ${exif.Model}`.trim()    : 'No camera signature found',
       editingSoftware: hasAISoftware
-        ? `AI editing detected: ${exif.Software}`
+        ? `⚠️ AI software detected: ${exif.Software}`
         : hasSoftware ? `${exif.Software} (no AI flags)` : 'No AI editing detected',
       timestamp: hasTimestamp
         ? `Found: ${new Date(exif.DateTimeOriginal).toLocaleDateString()}`
-        : 'Timestamp anomalies detected',
+        : 'No timestamp present',
     },
-    rawMetrics: { hasCamera, hasSoftware, hasTimestamp, hasGPS, hasExposure, hasAISoftware }
+    rawMetrics: {
+      hasCamera, hasSoftware, hasTimestamp,
+      hasGPS, hasExposure, hasAISoftware,
+    }
   };
 };

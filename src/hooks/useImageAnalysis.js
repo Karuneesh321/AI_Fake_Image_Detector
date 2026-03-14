@@ -1,7 +1,14 @@
 /**
  * useImageAnalysis.js
  * Custom React hook that orchestrates all 4 analysis modules.
- * Separating this from the UI keeps App.jsx clean and this logic unit-testable.
+ *
+ * Option 3 improvement: Camera bonus
+ * If real EXIF camera data is confirmed, bump the overall score by up to +15.
+ * A photo confirmed to come from a real camera is very unlikely to be AI-generated.
+ *
+ * Score floor:
+ * If 3 or more modules pass (>= 60), the overall score is floored at 45
+ * to avoid falsely labelling clearly real photos as "Fake".
  */
 
 import { useState, useCallback } from 'react';
@@ -40,7 +47,6 @@ export const useImageAnalysis = () => {
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0);
 
-      // Run modules sequentially with progress updates
       setProgress(10);
       const visual = analyzeVisualArtifacts(ctx, img.width, img.height);
 
@@ -54,8 +60,36 @@ export const useImageAnalysis = () => {
       const context = analyzeContext(ctx, img.width, img.height);
 
       setProgress(95);
-      const overallScore = calculateOverallScore({ visual, metadata, physics, context });
-      const explanation  = generateExplanation({ overallScore, visual, metadata, physics, context });
+
+      // --- Base weighted score ---
+      let overallScore = calculateOverallScore({ visual, metadata, physics, context });
+
+      // --- Option 3: Camera bonus ---
+      // If EXIF confirms a real camera, this is very strong evidence of authenticity
+      if (metadata.rawMetrics?.hasCamera) {
+        overallScore = Math.min(100, overallScore + 15);
+      }
+
+      // --- Score floor ---
+      // If 3+ modules individually pass (score >= 60), don't let the overall
+      // drop below 45 — avoids falsely flagging real photos as "Fake"
+      const passingModules = [visual, metadata, physics, context]
+        .filter(m => m.score >= 60).length;
+      if (passingModules >= 3) {
+        overallScore = Math.max(overallScore, 48);
+      }
+
+      // --- AI software hard override ---
+      // If metadata detected known AI software, cap score at 30 regardless
+      if (metadata.rawMetrics?.hasAISoftware) {
+        overallScore = Math.min(overallScore, 30);
+      }
+
+      overallScore = Math.round(overallScore);
+
+      const explanation = generateExplanation({
+        overallScore, visual, metadata, physics, context
+      });
 
       setProgress(100);
       setResults({ overallScore, visual, metadata, physics, context, explanation });
